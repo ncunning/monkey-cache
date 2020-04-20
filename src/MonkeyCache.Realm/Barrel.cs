@@ -42,7 +42,24 @@ namespace MonkeyCache.Realm
 				Directory.CreateDirectory(directory);
 			}
 
-			configuration = new RealmConfiguration(path);
+			// NOTE : If you want to open this database in Realm Studio, HEX Encode this key (appIdHash) from : http://www.convertstring.com/EncodeDecode/HexEncode
+			// and use that 128 charecter HEX string while opening the database.
+			configuration = new RealmConfiguration(path)
+			{
+				//Not encrypting the databse while in DEBUG mode, so that it can be opened in Windows machines using Realm Studio.
+
+				// Used to handle migrations, if you need to alter schema in situ
+				SchemaVersion = 1,
+
+				// todo: once data is saved in realm that release customers can
+				// see this will need to be moved behind the debug flag and
+				// migrations handled properly
+				ShouldDeleteIfMigrationNeeded = true,
+			};
+
+			if (!string.IsNullOrWhiteSpace(EncryptionKey))
+				// AES-256 bit encryption, just like that
+				configuration.EncryptionKey = System.Text.Encoding.ASCII.GetBytes(EncryptionKey);
 
 			jsonSettings = new JsonSerializerSettings
 			{
@@ -178,6 +195,9 @@ namespace MonkeyCache.Realm
 
 			if (ent == null)
 				return default(T);
+
+			if (ent == null || (AutoExpire && IsExpired(key)))
+				return result;
 
 			if (BarrelUtils.IsString(result))
 			{
