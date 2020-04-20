@@ -6,33 +6,51 @@ using System.Threading.Tasks;
 
 namespace MonkeyCache
 {
+	/// <summary>
+	/// Http cache utilities!
+	/// </summary>
 	public class HttpCache
 	{
-
-		static HttpCache instance = null;
+		private static HttpCache instance = null;
 
 		/// <summary>
 		/// Gets the instance of the HttpCache
 		/// </summary>
 		public static HttpCache Current => (instance ?? (instance = new HttpCache()));
 
-		HttpCache()
+		private HttpCache()
 		{
 		}
+
+		private HttpClient client;
 
 		internal HttpClient CreateClient(TimeSpan timeout)
 		{
-			var h = new HttpClientHandler {
+			var h = new HttpClientHandler
+			{
 				AllowAutoRedirect = true,
 				AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip,
 				MaxAutomaticRedirections = 20,
-
 			};
-			var cli = new HttpClient(h);
-			cli.Timeout = timeout;
-			return cli;
+
+			var client = new HttpClient(h)
+			{
+				Timeout = timeout
+			};
+
+			return client;
 		}
 
+		/// <summary>
+		/// Get a cahced item via web request.
+		/// </summary>
+		/// <param name="barrel">Barrel to use for cache</param>
+		/// <param name="url">Url to query</param>
+		/// <param name="timeout">Timeout to use</param>
+		/// <param name="expireIn">Set the item to expire in</param>
+		/// <param name="forceUpdate">Force an update from the server</param>
+		/// <param name="throttled">If the request should be throttled</param>
+		/// <returns>The cached or new active item.</returns>
 		public Task<string> GetCachedAsync(IBarrel barrel, string url, TimeSpan timeout, TimeSpan expireIn, bool forceUpdate = false, bool throttled = true)
 		{
 			var client = CreateClient(timeout);
@@ -41,15 +59,28 @@ namespace MonkeyCache
 		}
 	}
 
+	/// <summary>
+	/// Http cache extension helpers
+	/// </summary>
 	public static class HttpCacheExtensions
 	{
-		static System.Threading.SemaphoreSlim getThrottle = new System.Threading.SemaphoreSlim(4, 4);
+		private static System.Threading.SemaphoreSlim getThrottle = new System.Threading.SemaphoreSlim(4, 4);
 
+		/// <summary>
+		/// Send a cached requests
+		/// </summary>
+		/// <param name="http">Http client ot use</param>
+		/// <param name="barrel">Barrel to use for cache</param>
+		/// <param name="req">request to send</param>
+		/// <param name="expireIn">expire in</param>
+		/// <param name="forceUpdate">If we should force the update or not</param>
+		/// <param name="throttled">If throttled or not</param>
+		/// <returns>The new or cached response.</returns>
 		public static async Task<string> SendCachedAsync(this HttpClient http, IBarrel barrel, HttpRequestMessage req, TimeSpan expireIn, bool forceUpdate = false, bool throttled = true)
 		{
 			var url = req.RequestUri.ToString();
 
-			var contents = barrel.Get(url);
+			var contents = barrel.Get<string>(url);
 			var eTag = barrel.GetETag(url);
 
 			if (!forceUpdate && !string.IsNullOrEmpty(contents) && !barrel.IsExpired(url))
@@ -63,15 +94,18 @@ namespace MonkeyCache
 			HttpResponseMessage r;
 			string c = null;
 
-			try {
-				if (!forceUpdate && !string.IsNullOrEmpty(etag) && !string.IsNullOrEmpty(contents)) {
+			try
+			{
+				if (!forceUpdate && !string.IsNullOrEmpty(etag) && !string.IsNullOrEmpty(contents))
+				{
 					req.Headers.IfNoneMatch.Clear();
 					req.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(etag));
 				}
 
-				r = await http.SendAsync(req);
+				r = await http.SendAsync(req).ConfigureAwait(false);
 
-				if (r.StatusCode == HttpStatusCode.NotModified) {
+				if (r.StatusCode == HttpStatusCode.NotModified)
+				{
 					if (string.IsNullOrEmpty(contents))
 						throw new IndexOutOfRangeException($"Cached value missing for HTTP request: {url}");
 
@@ -79,32 +113,48 @@ namespace MonkeyCache
 				}
 
 				c = await r.Content.ReadAsStringAsync();
-			} finally {
+			}
+			finally
+			{
 				if (throttled)
 					getThrottle.Release();
 			}
 
-			if (r.StatusCode == HttpStatusCode.OK) {
+			if (r.StatusCode == HttpStatusCode.OK)
+			{
 				// Cache it?
 				var newEtag = r.Headers.ETag != null ? r.Headers.ETag.Tag : null;
 				if (!string.IsNullOrEmpty(newEtag) && newEtag != etag)
 					barrel.Add(url, c, expireIn, newEtag);
 
 				return c;
-			} else {
+			}
+			else
+			{
 				throw new HttpCacheRequestException(r.StatusCode, "HTTP Cache Request Failed");
 			}
 		}
 	}
 
+	/// <summary>
+	/// Http request exception
+	/// </summary>
 	public class HttpCacheRequestException : HttpRequestException
 	{
-		public HttpCacheRequestException (HttpStatusCode statusCode, string message) 
-			: base (message)
+		/// <summary>
+		/// Constructor for cache exception
+		/// </summary>
+		/// <param name="statusCode">The code</param>
+		/// <param name="message">Message</param>
+		public HttpCacheRequestException(HttpStatusCode statusCode, string message)
+			: base(message)
 		{
 			StatusCode = statusCode;
 		}
 
+		/// <summary>
+		/// Status code
+		/// </summary>
 		public HttpStatusCode StatusCode { get; private set; }
 	}
 }

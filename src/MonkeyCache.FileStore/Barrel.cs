@@ -11,13 +11,20 @@ namespace MonkeyCache.FileStore
 {
 	public class Barrel : IBarrel
 	{
-		ReaderWriterLockSlim indexLocker;
+		private ReaderWriterLockSlim indexLocker;
+		private readonly JsonSerializerSettings jsonSettings;
+		private Lazy<string> baseDirectory;
 
-		JsonSerializerSettings jsonSettings;
-
-		Barrel()
+		private Barrel(string cacheDirectory = null)
 		{
-			indexLocker = new ReaderWriterLockSlim();
+			baseDirectory = new Lazy<string>(() =>
+			{
+				return string.IsNullOrEmpty(cacheDirectory) ?
+					Path.Combine(BarrelUtils.GetBasePath(ApplicationId), "MonkeyCacheFS")
+					: cacheDirectory;
+			});
+
+			indexLocker = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
 
 			jsonSettings = new JsonSerializerSettings
 			{
@@ -34,187 +41,372 @@ namespace MonkeyCache.FileStore
 
 		public static string ApplicationId { get; set; } = string.Empty;
 
-		static Barrel instance = null;
+		public bool AutoExpire { get; set; }
+
+		private static Barrel instance = null;
 
 		/// <summary>
 		/// Gets the instance of the Barrel
 		/// </summary>
 		public static IBarrel Current => (instance ?? (instance = new Barrel()));
 
-		public void Add(string key, string data, TimeSpan expireIn, string eTag = null)
-		{
-			if (data == null)
-				return;
+		public static IBarrel Create(string cacheDirectory) =>
+			new Barrel(cacheDirectory);
 
+		/// <summary>
+		/// Adds an entry to the barrel
+		/// </summary>
+		/// <param name="key">Unique identifier for the entry</param>
+		/// <param name="data">Data object to store</param>
+		/// <param name="expireIn">Time from UtcNow to expire entry in</param>
+		/// <param name="eTag">Optional eTag information</param>
+		private void Add(string key, string data, TimeSpan expireIn, string eTag = null)
+		{
 			indexLocker.EnterWriteLock();
 
-			var hash = Hash(key);
-			var path = Path.Combine(baseDirectory.Value, hash);
+			try
+			{
+				var hash = Hash(key);
+				var path = Path.Combine(baseDirectory.Value, hash);
 
-			File.WriteAllText(path, data);
+				if (!Directory.Exists(baseDirectory.Value))
+					Directory.CreateDirectory(baseDirectory.Value);
 
-			index[key] = new Tuple<string, DateTime>(eTag ?? string.Empty, DateTime.UtcNow.Add(expireIn));
+				File.WriteAllText(path, data);
 
-			WriteIndex();
+				index[key] = new Tuple<string, DateTime>(eTag ?? string.Empty, BarrelUtils.GetExpiration(expireIn));
 
-			indexLocker.ExitWriteLock();
+				WriteIndex();
+			}
+			finally
+			{
+				indexLocker.ExitWriteLock();
+			}
 		}
 
-		public void Add<T>(string key, T data, TimeSpan expireIn, string eTag = null)
+		/// <summary>
+		/// Adds an entry to the barrel
+		/// </summary>
+		/// <typeparam name="T"></typeparam>
+		/// <param name="key">Unique identifier for the entry</param>
+		/// <param name="data">Data object to store</param>
+		/// <param name="expireIn">Time from UtcNow to expire entry in</param>
+		/// <param name="eTag">Optional eTag information</param>
+		/// <param name="jsonSerializationSettings">Custom json serialization settings to use</param>
+		public void Add<T>(string key,
+							T data,
+							TimeSpan expireIn,
+							string eTag = null,
+							JsonSerializerSettings jsonSerializationSettings = null)
 		{
-			var dataJson = JsonConvert.SerializeObject(data, jsonSettings);
+			if (string.IsNullOrWhiteSpace(key))
+				throw new ArgumentException("Key can not be null or empty.", nameof(key));
+
+			if (data == null)
+				throw new ArgumentNullException("Data can not be null.", nameof(data));
+
+			var dataJson = string.Empty;
+
+			if (BarrelUtils.IsString(data))
+			{
+				dataJson = data as string;
+			}
+			else
+			{
+				dataJson = JsonConvert.SerializeObject(data, jsonSerializationSettings ?? jsonSettings);
+			}
 
 			Add(key, dataJson, expireIn, eTag);
 		}
 
+		/// <summary>
+		/// Empties all specified entries regardless if they are expired.
+		/// Throws an exception if any deletions fail and rolls back changes.
+		/// </summary>
+		/// <param name="key">keys to empty</param>
 		public void Empty(params string[] key)
 		{
 			indexLocker.EnterWriteLock();
 
-			foreach (var k in key)
+			try
 			{
-				File.Delete(Path.Combine(baseDirectory.Value, Hash(k)));
-				index.Remove(k);
+				foreach (var k in key)
+				{
+					if (string.IsNullOrWhiteSpace(k))
+						continue;
+
+					var file = Path.Combine(baseDirectory.Value, Hash(k));
+					if (File.Exists(file))
+						File.Delete(file);
+
+					index.Remove(k);
+				}
+
+				WriteIndex();
 			}
-
-			WriteIndex();
-
-			indexLocker.ExitWriteLock();
+			finally
+			{
+				indexLocker.ExitWriteLock();
+			}
 		}
 
+		/// <summary>
+		/// Empties all expired entries that are in the Barrel.
+		/// Throws an exception if any deletions fail and rolls back changes.
+		/// </summary>
 		public void EmptyAll()
 		{
 			indexLocker.EnterWriteLock();
 
-			foreach (var item in index)
+			try
 			{
-				var hash = Hash(item.Key);
-				File.Delete(Path.Combine(baseDirectory.Value, hash));
+				foreach (var item in index)
+				{
+					var hash = Hash(item.Key);
+					var file = Path.Combine(baseDirectory.Value, hash);
+					if (File.Exists(file))
+						File.Delete(file);
+				}
+
+				index.Clear();
+
+				WriteIndex();
 			}
-
-			index.Clear();
-
-			WriteIndex();
-
-			indexLocker.ExitWriteLock();
+			finally
+			{
+				indexLocker.ExitWriteLock();
+			}
 		}
 
+		/// <summary>
+		/// Empties all expired entries that are in the Barrel.
+		/// Throws an exception if any deletions fail and rolls back changes.
+		/// </summary>
 		public void EmptyExpired()
 		{
 			indexLocker.EnterWriteLock();
 
-			var expired = index.Where(k => k.Value.Item2 < DateTime.UtcNow);
-
-			var toRem = new List<string>();
-
-			foreach (var item in expired)
+			try
 			{
-				var hash = Hash(item.Key);
-				File.Delete(Path.Combine(baseDirectory.Value, hash));
-				toRem.Add(item.Key);
+				var expired = index.Where(k => k.Value.Item2 < DateTime.UtcNow);
+
+				var toRem = new List<string>();
+
+				foreach (var item in expired)
+				{
+					var hash = Hash(item.Key);
+					var file = Path.Combine(baseDirectory.Value, hash);
+					if (File.Exists(file))
+						File.Delete(file);
+					toRem.Add(item.Key);
+				}
+
+				foreach (var key in toRem)
+					index.Remove(key);
+
+				WriteIndex();
 			}
-
-			foreach (var key in toRem)
-				index.Remove(key);
-
-			WriteIndex();
-
-			indexLocker.ExitWriteLock();
+			finally
+			{
+				indexLocker.ExitWriteLock();
+			}
 		}
 
+		/// <summary>
+		/// Checks to see if the key exists in the Barrel.
+		/// </summary>
+		/// <param name="key">Unique identifier for the entry to check</param>
+		/// <returns>If the key exists</returns>
 		public bool Exists(string key)
 		{
+			if (string.IsNullOrWhiteSpace(key))
+				throw new ArgumentException("Key can not be null or empty.", nameof(key));
+
 			var exists = false;
 
 			indexLocker.EnterReadLock();
 
-			exists = index.ContainsKey(key);
-
-			indexLocker.ExitReadLock();
+			try
+			{
+				exists = index.ContainsKey(key);
+			}
+			finally
+			{
+				indexLocker.ExitReadLock();
+			}
 
 			return exists;
 		}
 
-		public string Get(string key)
+		/// <summary>
+		/// Gets all the keys that are saved in the cache
+		/// </summary>
+		/// <returns>The IEnumerable of keys</returns>
+		public IEnumerable<string> GetKeys(CacheState state = CacheState.Active)
 		{
-			string result = null;
-
 			indexLocker.EnterReadLock();
 
-			var hash = Hash(key);
-			var path = Path.Combine(baseDirectory.Value, hash);
+			try
+			{
+				if (index != null)
+				{
+					var bananas = new List<KeyValuePair<string, Tuple<string, DateTime>>>();
 
-			if (index.ContainsKey(key) && File.Exists(path))
-				result = File.ReadAllText(path);
+					if (state.HasFlag(CacheState.Active))
+					{
+						bananas = index
+							.Where(x => x.Value.Item2 >= DateTime.UtcNow)
+							.ToList();
+					}
 
-			indexLocker.ExitReadLock();
+					if (state.HasFlag(CacheState.Expired))
+					{
+						bananas.AddRange(index.Where(x => x.Value.Item2 < DateTime.UtcNow));
+					}
 
-			return result;
+					return bananas.Select(x => x.Key);
+				}
+
+				return new string[0];
+			}
+			catch (Exception)
+			{
+				return new string[0];
+			}
+			finally
+			{
+				indexLocker.ExitReadLock();
+			}
 		}
 
-		public T Get<T>(string key)
+		/// <summary>
+		/// Gets the data entry for the specified key.
+		/// </summary>
+		/// <param name="key">Unique identifier for the entry to get</param>
+		/// <param name="jsonSerializationSettings">Custom json serialization settings to use</param>
+		/// <returns>The data object that was stored if found, else default(T)</returns>
+		public T Get<T>(string key, JsonSerializerSettings jsonSerializationSettings = null)
 		{
+			if (string.IsNullOrWhiteSpace(key))
+				throw new ArgumentException("Key can not be null or empty.", nameof(key));
+
 			var result = default(T);
 
 			indexLocker.EnterReadLock();
 
-			var hash = Hash(key);
-			var path = Path.Combine(baseDirectory.Value, hash);
-
-			if (index.ContainsKey(key) && File.Exists(path))
+			try
 			{
-				var contents = File.ReadAllText(path);
-				result = JsonConvert.DeserializeObject<T>(contents, jsonSettings);
-			}
+				var hash = Hash(key);
+				var path = Path.Combine(baseDirectory.Value, hash);
 
-			indexLocker.ExitReadLock();
+				if (index.ContainsKey(key) && File.Exists(path) && (!AutoExpire || (AutoExpire && !IsExpired(key))))
+				{
+					var contents = File.ReadAllText(path);
+					if (BarrelUtils.IsString(result))
+					{
+						object final = contents;
+						return (T)final;
+					}
+
+					result = JsonConvert.DeserializeObject<T>(contents, jsonSerializationSettings ?? jsonSettings);
+				}
+			}
+			finally
+			{
+				indexLocker.ExitReadLock();
+			}
 
 			return result;
 		}
 
+		/// <summary>
+		/// Gets the DateTime that the item will expire for the specified key.
+		/// </summary>
+		/// <param name="key">Unique identifier for entry to get</param>
+		/// <returns>The expiration date if the key is found, else null</returns>
+		public DateTime? GetExpiration(string key)
+		{
+			if (string.IsNullOrWhiteSpace(key))
+				throw new ArgumentException("Key can not be null or empty.", nameof(key));
+
+			DateTime? date = null;
+
+			indexLocker.EnterReadLock();
+
+			try
+			{
+				if (index.ContainsKey(key))
+					date = index[key]?.Item2;
+			}
+			finally
+			{
+				indexLocker.ExitReadLock();
+			}
+
+			return date;
+		}
+
+		/// <summary>
+		/// Gets the ETag for the specified key.
+		/// </summary>
+		/// <param name="key">Unique identifier for entry to get</param>
+		/// <returns>The ETag if the key is found, else null</returns>
 		public string GetETag(string key)
 		{
-			if (key == null)
-				return null;
+			if (string.IsNullOrWhiteSpace(key))
+				throw new ArgumentException("Key can not be null or empty.", nameof(key));
 
 			string etag = null;
 
 			indexLocker.EnterReadLock();
 
-			if (index.ContainsKey(key))
-				etag = index[key]?.Item1;
-
-			indexLocker.ExitReadLock();
+			try
+			{
+				if (index.ContainsKey(key))
+					etag = index[key]?.Item1;
+			}
+			finally
+			{
+				indexLocker.ExitReadLock();
+			}
 
 			return etag;
 		}
 
+		/// <summary>
+		/// Checks to see if the entry for the key is expired.
+		/// </summary>
+		/// <param name="key">Key to check</param>
+		/// <returns>If the expiration data has been met</returns>
 		public bool IsExpired(string key)
 		{
+			if (string.IsNullOrWhiteSpace(key))
+				throw new ArgumentException("Key can not be null or empty.", nameof(key));
+
 			var expired = true;
 
 			indexLocker.EnterReadLock();
 
-			if (index.ContainsKey(key))
-				expired = index[key].Item2 < DateTime.UtcNow;
-
-			indexLocker.ExitReadLock();
+			try
+			{
+				if (index.ContainsKey(key))
+					expired = index[key].Item2 < DateTime.UtcNow;
+			}
+			finally
+			{
+				indexLocker.ExitReadLock();
+			}
 
 			return expired;
 		}
 
-		Lazy<string> baseDirectory = new Lazy<string>(() =>
-		{
-			return Path.Combine(Utils.GetBasePath(ApplicationId), "MonkeyCacheFS");
-		});
+		private Dictionary<string, Tuple<string, DateTime>> index;
 
-		Dictionary<string, Tuple<string, DateTime>> index;
+		private const string INDEX_FILENAME = "idx.dat";
 
-		const string INDEX_FILENAME = "idx.dat";
+		private string indexFile;
 
-		string indexFile;
-
-		void WriteIndex()
+		private void WriteIndex()
 		{
 			if (string.IsNullOrEmpty(indexFile))
 				indexFile = Path.Combine(baseDirectory.Value, INDEX_FILENAME);
@@ -222,15 +414,17 @@ namespace MonkeyCache.FileStore
 				Directory.CreateDirectory(baseDirectory.Value);
 
 			using (var f = File.Open(indexFile, FileMode.Create))
-			using (var sw = new StreamWriter(f)) {
-				foreach (var kvp in index) {
+			using (var sw = new StreamWriter(f))
+			{
+				foreach (var kvp in index)
+				{
 					var dtEpoch = DateTimeToEpochSeconds(kvp.Value.Item2);
 					sw.WriteLine($"{kvp.Key}\t{kvp.Value.Item1}\t{dtEpoch.ToString()}");
 				}
 			}
 		}
 
-		void LoadIndex()
+		private void LoadIndex()
 		{
 			if (string.IsNullOrEmpty(indexFile))
 				indexFile = Path.Combine(baseDirectory.Value, INDEX_FILENAME);
@@ -261,25 +455,26 @@ namespace MonkeyCache.FileStore
 			}
 		}
 
-		static string Hash(string input)
+		private static string Hash(string input)
 		{
 			var md5Hasher = MD5.Create();
 			var data = md5Hasher.ComputeHash(Encoding.Default.GetBytes(input));
 			return BitConverter.ToString(data);
 		}
 
+		private static readonly DateTime epoch = new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc);
 
-		static readonly DateTime epoch = new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc);
-
-		static int DateTimeToEpochSeconds (DateTime date)
+		private static int DateTimeToEpochSeconds(DateTime date)
 		{
 			var diff = date - epoch;
 			return (int)diff.TotalSeconds;
 		}
 
-		static DateTime EpochSecondsToDateTime (int seconds)
+		private static DateTime EpochSecondsToDateTime(int seconds) => epoch + TimeSpan.FromSeconds(seconds);
+
+		public DateTimeOffset? GetExpiration(string key, bool isRealm)
 		{
-			return epoch + TimeSpan.FromSeconds(seconds);
+			throw new NotImplementedException();
 		}
 	}
 }

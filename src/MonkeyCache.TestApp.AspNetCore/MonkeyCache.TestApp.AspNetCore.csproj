@@ -1,33 +1,37 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
-  <PropertyGroup>
-    <TargetFramework>netcoreapp2.0</TargetFramework>
-  </PropertyGroup>
+	<PropertyGroup>
+		<TargetFramework>netcoreapp2.0</TargetFramework>
+	</PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="LiteDB" Version="4.1.0" />
-    <PackageReference Include="Microsoft.AspNetCore.All" Version="2.0.3" />
-    <PackageReference Include="Ooui" Version="0.4.114" />
-    <PackageReference Include="Ooui.AspNetCore" Version="0.4.114" />
-    <PackageReference Include="Ooui.Forms" Version="0.4.114" />
-    <PackageReference Include="sqlite-net-pcl" Version="1.4.118" />
-    <PackageReference Include="Xamarin.Forms" Version="2.4.0.38779" />
-  </ItemGroup>
+	<ItemGroup>
+		<PackageReference Include="LiteDB" Version="5.0.2" />
+		<PackageReference Include="Microsoft.AspNetCore.All" Version="2.0.9" />
+		<PackageReference Include="Ooui" Version="0.10.222" />
+		<PackageReference Include="Ooui.AspNetCore" Version="0.10.222" />
+		<PackageReference Include="Ooui.Forms" Version="0.10.222" />
+		<PackageReference Include="Realm" Version="4.3.0" />
+		<PackageReference Include="Realm.Fody" Version="4.3.0">
+		  <PrivateAssets>all</PrivateAssets>
+		  <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+		</PackageReference>
+		<PackageReference Include="sqlite-net-pcl" Version="1.6.292" />
+		<PackageReference Include="Xamarin.Forms" Version="2.5.0.122203" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <DotNetCliToolReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Tools" Version="2.0.1" />
-  </ItemGroup>
+	<ItemGroup>
+		<DotNetCliToolReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Tools" Version="2.0.1" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Views\Home\" />
-  </ItemGroup>
+	<ItemGroup>
+		<Folder Include="Views\Home\" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\MonkeyCache.FileStore\MonkeyCache.FileStore.csproj" />
-    <ProjectReference Include="..\MonkeyCache.LiteDB\MonkeyCache.LiteDB.csproj" />
-    <ProjectReference Include="..\MonkeyCache.SQLite\MonkeyCache.SQLite.csproj" />
-    <ProjectReference Include="..\MonkeyCache.TestApp\MonkeyCache.TestApp.csproj" />
-    <ProjectReference Include="..\MonkeyCache\MonkeyCache.csproj" />
-  </ItemGroup>
-
+	<ItemGroup>
+		<ProjectReference Include="..\MonkeyCache.FileStore\MonkeyCache.FileStore.csproj" />
+		<ProjectReference Include="..\MonkeyCache.LiteDB\MonkeyCache.LiteDB.csproj" />
+		<ProjectReference Include="..\MonkeyCache.SQLite\MonkeyCache.SQLite.csproj" />
+		<ProjectReference Include="..\MonkeyCache.TestApp\MonkeyCache.TestApp.csproj" />
+		<ProjectReference Include="..\MonkeyCache\MonkeyCache.csproj" />
+	</ItemGroup>
 </Project>
