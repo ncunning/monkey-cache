@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using MonkeyCache.Helpers;
 using MonkeyCache.Realm;
 using Newtonsoft.Json;
 
@@ -21,7 +22,7 @@ namespace MonkeyCache.Tests
 		public void Setup()
 		{
 			Barrel.ApplicationId = "com.monkey.barrel.encrypt";
-			Barrel.EncryptionKey = Barrel.ApplicationId;
+			Barrel.EncryptionKey = Guid.NewGuid().ToString().ToSHAHash();
 
 			url = "http://montemagno.com/monkeys.json";
 			barrel = Barrel.Current;
